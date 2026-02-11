@@ -81,7 +81,7 @@ jobs:
         continue-on-error: true
         run: |
           echo "Starting MediaCrawler scraper (cookie auth - no QR needed)..."
-          python main.py --platform xhs --lt cookie --type search --keywords "上海"
+          python main.py --platform xhs --lt cookie --type search 
           echo "✓ Scraping completed"
         timeout-minutes: 30
 
