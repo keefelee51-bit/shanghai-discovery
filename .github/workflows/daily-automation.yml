@@ -47,6 +47,15 @@ jobs:
           echo "✓ Python dependencies installed"
 
       # ─────────────────────────────────────────────────────────────
+      # STEP 4.5: Install Playwright browsers
+      # ─────────────────────────────────────────────────────────────
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+          echo "✓ Playwright browsers installed"
+
+      # ─────────────────────────────────────────────────────────────
       # STEP 5: Install Node.js dependencies (main project)
       # ─────────────────────────────────────────────────────────────
       - name: Install Node.js dependencies
@@ -115,6 +124,7 @@ jobs:
           VITE_ANTHROPIC_API_KEY: ${{ secrets.VITE_ANTHROPIC_API_KEY }}
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
         run: |
           echo "Processing ${{ steps.verify.outputs.post_count }} posts..."
 
