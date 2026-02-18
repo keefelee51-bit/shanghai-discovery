@@ -20,8 +20,9 @@
 # 基础配置
 PLATFORM = "xhs"  # 平台，xhs | dy | ks | bili | wb | tieba | zhihu
 KEYWORDS = "上海探店,上海美食,上海活动,上海周末去哪,上海新店,上海酒吧,Shanghai"  # Shanghai discovery keywords
+import os
 LOGIN_TYPE = "cookie"  # qrcode or phone or cookie
-COOKIES = ""
+COOKIES = os.environ.get("COOKIES", "")
 CRAWLER_TYPE = (
     "search"  # 爬取类型，search(关键词搜索) | detail(帖子详情)| creator(创作者主页数据)
 )

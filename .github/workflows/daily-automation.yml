@@ -78,74 +78,29 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       # STEP 6: Configure scraper with cookies (NO QR CODE NEEDED!)
       # ─────────────────────────────────────────────────────────────
-      - name: Configure scraper for cookie authentication
-        working-directory: scraper
-        env:
-          XHS_COOKIES: ${{ secrets.XHS_COOKIES }}
-        run: |
-          echo "Configuring MediaCrawler for cookie authentication..."
-
-          # Write cookie to temp file, then inject via Python repr() (handles ANY special chars)
-          echo -n "$XHS_COOKIES" > /tmp/cookies.txt
-          python3 << 'PYEOF'
-          with open('/tmp/cookies.txt', 'r') as f:
-              cookies = f.read().strip()
-          with open('config/base_config.py', 'r') as f:
-              lines = f.readlines()
-          with open('config/base_config.py', 'w') as f:
-              for line in lines:
-                  if line.startswith('COOKIES = '):
-                      f.write(f'COOKIES = {repr(cookies)}\n')
-                  else:
-                      f.write(line)
-          PYEOF
-
-          echo "✓ Cookie authentication configured"
-
+      # STEP 7: Run XHS scraper (cookies passed via env var)
       # ─────────────────────────────────────────────────────────────
-      # STEP 7: Run scraper (MediaCrawler) with cookie auth
-      # ─────────────────────────────────────────────────────────────
-      - name: Run scraper with cookies
+      - name: Run XHS scraper
         id: scrape
         working-directory: scraper
         continue-on-error: true
+        env:
+          COOKIES: ${{ secrets.XHS_COOKIES }}
         run: |
-          echo "Starting MediaCrawler scraper (cookie auth - no QR needed)..."
-          python main.py --platform xhs --lt cookie --type search 
-          echo "✓ Scraping completed"
+          echo "Starting XHS scraper..."
+          python main.py --platform xhs --lt cookie --type search
+          echo "✓ XHS scraping completed"
         timeout-minutes: 30
 
       # ─────────────────────────────────────────────────────────────
-      # STEP 7.5: Configure Weibo cookies
-      # ─────────────────────────────────────────────────────────────
-      - name: Configure Weibo cookies
-        working-directory: scraper
-        env:
-          WEIBO_COOKIES: ${{ secrets.WEIBO_COOKIES }}
-        run: |
-          # Write cookie to temp file, then inject via Python repr() (handles ANY special chars)
-          echo -n "$WEIBO_COOKIES" > /tmp/cookies.txt
-          python3 << 'PYEOF'
-          with open('/tmp/cookies.txt', 'r') as f:
-              cookies = f.read().strip()
-          with open('config/base_config.py', 'r') as f:
-              lines = f.readlines()
-          with open('config/base_config.py', 'w') as f:
-              for line in lines:
-                  if line.startswith('COOKIES = '):
-                      f.write(f'COOKIES = {repr(cookies)}\n')
-                  else:
-                      f.write(line)
-          PYEOF
-          echo "✓ Weibo cookies configured"
-
-      # ─────────────────────────────────────────────────────────────
-      # STEP 7.6: Run Weibo scraper
+      # STEP 7.5: Run Weibo scraper (cookies passed via env var)
       # ─────────────────────────────────────────────────────────────
       - name: Run Weibo scraper
         id: scrape-weibo
         working-directory: scraper
         continue-on-error: true
+        env:
+          COOKIES: ${{ secrets.WEIBO_COOKIES }}
         run: |
           echo "Starting Weibo scraper..."
           python main.py --platform wb --lt cookie --type search
