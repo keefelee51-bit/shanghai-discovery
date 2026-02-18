@@ -37,5 +37,12 @@ scraper/log/
 scraper/browser_data/
 scraper/.git/
 
+# Google service account keys
+*-key.json
+shanghai-discovery-*.json
+
+# Misc
+nul
+
 # Claude AI
 .claude/

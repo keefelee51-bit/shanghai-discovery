@@ -89,7 +89,7 @@ jobs:
           sed -i 's/LOGIN_TYPE = "qrcode"/LOGIN_TYPE = "cookie"/' config/base_config.py
 
           # Inject cookies from GitHub Secret
-          sed -i "s/COOKIES = \"\"/COOKIES = \"$XHS_COOKIES\"/" config/base_config.py
+          sed -i "s|COOKIES = \"\"|COOKIES = \"$XHS_COOKIES\"|" config/base_config.py
 
           echo "✓ Cookie authentication configured"
 
@@ -115,8 +115,8 @@ jobs:
           WEIBO_COOKIES: ${{ secrets.WEIBO_COOKIES }}
         run: |
           # Reset to empty cookies first (clears XHS cookies), then inject Weibo cookies
-          sed -i 's/COOKIES = "[^"]*"/COOKIES = ""/' config/base_config.py
-          sed -i "s/COOKIES = \"\"/COOKIES = \"$WEIBO_COOKIES\"/" config/base_config.py
+          sed -i 's|COOKIES = "[^"]*"|COOKIES = ""|' config/base_config.py
+          sed -i "s|COOKIES = \"\"|COOKIES = \"$WEIBO_COOKIES\"|" config/base_config.py
           echo "✓ Weibo cookies configured"
 
       # ─────────────────────────────────────────────────────────────
