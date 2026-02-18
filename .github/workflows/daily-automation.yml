@@ -85,16 +85,17 @@ jobs:
         run: |
           echo "Configuring MediaCrawler for cookie authentication..."
 
-          # Inject XHS cookies from GitHub Secret using Python (handles special chars safely)
+          # Write cookie to temp file, then inject via Python repr() (handles ANY special chars)
+          echo -n "$XHS_COOKIES" > /tmp/cookies.txt
           python3 << 'PYEOF'
-          import os
-          cookies = os.environ['XHS_COOKIES'].replace('\\', '\\\\').replace('"', '\\"')
+          with open('/tmp/cookies.txt', 'r') as f:
+              cookies = f.read().strip()
           with open('config/base_config.py', 'r') as f:
               lines = f.readlines()
           with open('config/base_config.py', 'w') as f:
               for line in lines:
                   if line.startswith('COOKIES = '):
-                      f.write(f'COOKIES = "{cookies}"\n')
+                      f.write(f'COOKIES = {repr(cookies)}\n')
                   else:
                       f.write(line)
           PYEOF
@@ -122,16 +123,17 @@ jobs:
         env:
           WEIBO_COOKIES: ${{ secrets.WEIBO_COOKIES }}
         run: |
-          # Replace cookies with Weibo cookies using Python (handles special chars safely)
+          # Write cookie to temp file, then inject via Python repr() (handles ANY special chars)
+          echo -n "$WEIBO_COOKIES" > /tmp/cookies.txt
           python3 << 'PYEOF'
-          import os
-          cookies = os.environ['WEIBO_COOKIES'].replace('\\', '\\\\').replace('"', '\\"')
+          with open('/tmp/cookies.txt', 'r') as f:
+              cookies = f.read().strip()
           with open('config/base_config.py', 'r') as f:
               lines = f.readlines()
           with open('config/base_config.py', 'w') as f:
               for line in lines:
                   if line.startswith('COOKIES = '):
-                      f.write(f'COOKIES = "{cookies}"\n')
+                      f.write(f'COOKIES = {repr(cookies)}\n')
                   else:
                       f.write(line)
           PYEOF
