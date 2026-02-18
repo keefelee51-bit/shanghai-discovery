@@ -36,6 +36,7 @@ jobs:
         with:
           node-version: '18'
           cache: 'npm'
+          
 
       # ─────────────────────────────────────────────────────────────
       # STEP 4: Install Python dependencies (scraper)
@@ -44,6 +45,7 @@ jobs:
         working-directory: scraper
         run: |
           pip install -r requirements.txt
+          pip install demucs
           echo "✓ Python dependencies installed"
 
       # ─────────────────────────────────────────────────────────────
@@ -62,6 +64,16 @@ jobs:
         run: |
           npm ci
           echo "✓ Node.js dependencies installed"
+
+      # ─────────────────────────────────────────────────────────────
+      # STEP 5.5: Write Google Vision credentials file
+      # ─────────────────────────────────────────────────────────────
+      - name: Setup Google Vision credentials
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
+          echo "✓ Google Vision credentials written"
 
       # ─────────────────────────────────────────────────────────────
       # STEP 6: Configure scraper with cookies (NO QR CODE NEEDED!)
@@ -95,6 +107,50 @@ jobs:
         timeout-minutes: 30
 
       # ─────────────────────────────────────────────────────────────
+      # STEP 7.5: Configure Weibo cookies
+      # ─────────────────────────────────────────────────────────────
+      - name: Configure Weibo cookies
+        working-directory: scraper
+        env:
+          WEIBO_COOKIES: ${{ secrets.WEIBO_COOKIES }}
+        run: |
+          # Reset to empty cookies first (clears XHS cookies), then inject Weibo cookies
+          sed -i 's/COOKIES = "[^"]*"/COOKIES = ""/' config/base_config.py
+          sed -i "s/COOKIES = \"\"/COOKIES = \"$WEIBO_COOKIES\"/" config/base_config.py
+          echo "✓ Weibo cookies configured"
+
+      # ─────────────────────────────────────────────────────────────
+      # STEP 7.6: Run Weibo scraper
+      # ─────────────────────────────────────────────────────────────
+      - name: Run Weibo scraper
+        id: scrape-weibo
+        working-directory: scraper
+        continue-on-error: true
+        run: |
+          echo "Starting Weibo scraper..."
+          python main.py --platform wb --lt cookie --type search
+          echo "✓ Weibo scraping completed"
+        timeout-minutes: 20
+
+      # ─────────────────────────────────────────────────────────────
+      # STEP 7.7: Verify Weibo data
+      # ─────────────────────────────────────────────────────────────
+      - name: Verify Weibo data
+        id: verify-weibo
+        working-directory: scraper
+        continue-on-error: true
+        run: |
+          LATEST=$(ls -t data/weibo/json/search_contents_*.json 2>/dev/null | head -n 1)
+          if [ -z "$LATEST" ]; then
+            echo "⚠️  No Weibo data found — XHS-only run"
+            echo "weibo_file=" >> $GITHUB_OUTPUT
+          else
+            COUNT=$(node -pe "require('./$LATEST').length")
+            echo "✓ Found $COUNT Weibo posts in $LATEST"
+            echo "weibo_file=$LATEST" >> $GITHUB_OUTPUT
+          fi
+
+      # ─────────────────────────────────────────────────────────────
       # STEP 8: Verify scraped data
       # ─────────────────────────────────────────────────────────────
       - name: Verify scraped data
@@ -125,12 +181,20 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          GOOGLE_APPLICATION_CREDENTIALS: ./google-vision-key.json
         run: |
-          echo "Processing ${{ steps.verify.outputs.post_count }} posts..."
+          XHS_FILE="./scraper/${{ steps.verify.outputs.scraped_file }}"
+          WEIBO_FILE="${{ steps.verify-weibo.outputs.weibo_file }}"
 
-          # Run processing script with path to scraped data
-          SCRAPED_FILE="./scraper/${{ steps.verify.outputs.scraped_file }}"
-          node scripts/process-xhs-posts.mjs "$SCRAPED_FILE"
+          if [ -n "$WEIBO_FILE" ]; then
+            echo "Processing XHS + Weibo posts (limits: 15 XHS, 5 Weibo)..."
+            node scripts/process-xhs-posts.mjs "$XHS_FILE" "./scraper/$WEIBO_FILE" --limits 15,5
+          else
+            echo "Processing XHS-only posts (limit: 15)..."
+            node scripts/process-xhs-posts.mjs "$XHS_FILE" --limit 15
+          fi
 
           echo "✓ Processing completed"
 
@@ -145,8 +209,8 @@ jobs:
           echo "Uploading processed posts to Supabase..."
           node scripts/upload-to-supabase.mjs
           echo "✓ Upload completed"
-
-      # ─────────────────────────────────────────────────────────────
+          
+      # ───────────────────────────────────
       # STEP 11: Pipeline Summary
       # ─────────────────────────────────────────────────────────────
       - name: Pipeline Summary
@@ -182,4 +246,5 @@ jobs:
           path: |
             data/pipeline-output.json
             scraper/data/xhs/json/*.json
+            scraper/data/weibo/json/*.json
           retention-days: 7

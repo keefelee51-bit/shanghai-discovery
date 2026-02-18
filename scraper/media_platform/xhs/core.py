@@ -43,7 +43,7 @@ from var import crawler_type_var, source_keyword_var
 
 from .client import XiaoHongShuClient
 from .exception import DataFetchError, NoteNotFoundError
-from .field import SearchSortType
+from .field import SearchSortType, SearchNoteType
 from .help import parse_note_info_from_note_url, parse_creator_info_from_url, get_search_id
 from .login import XiaoHongShuLogin
 
@@ -149,6 +149,7 @@ class XiaoHongShuCrawler(AbstractCrawler):
                         search_id=search_id,
                         page=page,
                         sort=(SearchSortType(config.SORT_TYPE) if config.SORT_TYPE != "" else SearchSortType.GENERAL),
+                        note_type=SearchNoteType(config.SEARCH_NOTE_TYPE) if hasattr(config, 'SEARCH_NOTE_TYPE') else SearchNoteType.ALL,
                     )
                     utils.logger.info(f"[XiaoHongShuCrawler.search] Search notes response: {notes_res}")
                     if not notes_res or not notes_res.get("has_more", False):

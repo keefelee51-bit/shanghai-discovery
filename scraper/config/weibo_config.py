@@ -21,7 +21,7 @@
 # 微博平台配置
 
 # 搜索类型，具体的枚举值在media_platform/weibo/field.py中
-WEIBO_SEARCH_TYPE = "default"
+WEIBO_SEARCH_TYPE = "real_time"  # "61" = recency-sorted; was "default"
 
 # 指定微博ID列表
 WEIBO_SPECIFIED_ID_LIST = [

@@ -1,14 +1,23 @@
 // process-xhs-posts.mjs
-// Pipeline: Scraped XHS JSON → Claude API (filter + translate) → Supabase-ready JSON
+// Pipeline: Scraped XHS/Weibo JSON → Claude API (filter + translate) → Supabase-ready JSON
 //
-// Usage: node scripts/process-xhs-posts.mjs [path-to-scraped-json]
-// Example: node scripts/process-xhs-posts.mjs ../projects/xiaohongshu-scraper-test/data/xhs/json/search_contents_2026-02-09.json
+// Usage: node scripts/process-xhs-posts.mjs <file1.json> [file2.json] [--limits N,M] [--limit N]
+// Example (XHS only):       node scripts/process-xhs-posts.mjs ./scraper/data/xhs/json/search_contents_DATE.json --limit 15
+// Example (XHS + Weibo):    node scripts/process-xhs-posts.mjs ./scraper/data/xhs/json/search_contents_DATE.json ./scraper/data/weibo/json/search_contents_DATE.json --limits 15,5
 
 import Anthropic from '@anthropic-ai/sdk'
 import { createClient } from '@supabase/supabase-js'
 import fs from 'fs'
+import https from 'https'
+import http from 'http'
 import path from 'path'
 import dotenv from 'dotenv'
+import { analyzeImageWithGoogle } from './image-processing/analyze-with-google-vision.mjs'
+import { editImageWithQwen } from './image-processing/edit-with-qwen.mjs'
+import { validateImageTranslation } from './image-processing/validate-with-claude.mjs'
+import { overlayTranslatedText } from './image-processing/simple-text-overlay.mjs'
+import { dubVideo } from './video-processing/dub-video.mjs'
+import ffmpeg from 'fluent-ffmpeg'
 
 // Load .env from project root
 dotenv.config({ path: path.resolve(import.meta.dirname, '..', '.env') })
@@ -109,8 +118,6 @@ async function filterPost(post) {
   const imageCount = post.image_list ? post.image_list.split(',').filter(Boolean).length : 0
   const publishDate = new Date(post.time)
 
-
-
   const prompt = `
 Analyze this Xiaohongshu post and decide if it's relevant for Shanghai Discovery.
 
@@ -174,40 +181,154 @@ Respond with ONLY valid JSON (no markdown):
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-5-20250929',
     max_tokens: 800,
-    messages: [{ role: 'user', content: prompt }]
+    messages: [
+      { role: 'user', content: prompt },
+      { role: 'assistant', content: '{' }
+    ]
   })
 
-  return parseJsonResponse(message.content[0].text.trim())
+  return parseJsonResponse('{' + message.content[0].text.trim())
 }
 
-// ─── STEP 2.5: READ LOCAL IMAGES & UPLOAD ALL TO SUPABASE STORAGE ────────
-async function uploadAllImagesToSupabase(noteId) {
+// ─── HELPER: Download a video from a URL to a local file ──────────────────────
+function downloadVideo(url, outputPath) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(outputPath)
+    const client = url.startsWith('https') ? https : http
+
+    client.get(url, (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`Video download failed: HTTP ${res.statusCode}`))
+        return
+      }
+      res.pipe(file)
+      file.on('finish', () => file.close(resolve))
+    }).on('error', (err) => {
+      fs.unlink(outputPath, () => {})
+      reject(new Error(`Video download error: ${err.message}`))
+    })
+  })
+}
+
+// ─── HELPER: Get video duration in seconds via ffprobe ────────────────────────
+function getVideoDuration(videoPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(videoPath, (err, metadata) => {
+      if (err) return reject(new Error(`ffprobe failed: ${err.message}`))
+      resolve(metadata.format.duration || 0)
+    })
+  })
+}
+
+// ─── HELPER: Upload dubbed video to Supabase storage ──────────────────────────
+async function uploadVideoToSupabase(videoPath, noteId) {
+  const buffer = fs.readFileSync(videoPath)
+  const fileName = `${noteId}-${Date.now()}.mp4`
+
+  const { error } = await supabase.storage
+    .from('post-videos')
+    .upload(fileName, buffer, {
+      contentType: 'video/mp4',
+      upsert: false
+    })
+
+  if (error) throw new Error(`Video upload failed: ${error.message}`)
+
+  const { data: { publicUrl } } = supabase.storage
+    .from('post-videos')
+    .getPublicUrl(fileName)
+
+  return publicUrl
+}
+
+// ─── STEP 2.5: READ LOCAL IMAGES, TRANSLATE TEXT, & UPLOAD TO SUPABASE STORAGE ────────
+async function uploadAllImagesToSupabase(noteId, scraperImagesDir) {
   try {
-    // Path to MediaCrawler's downloaded images
-    const imageFolderPath = path.resolve('C:/Users/Lenovo/projects/xiaohongshu-scraper-test/data/xhs/images', noteId)
+    // scraperImagesDir is derived from the input JSON path (works both locally and on GitHub Actions)
+    const imageFolderPath = path.join(scraperImagesDir, noteId)
 
     // Check if folder exists
     if (!fs.existsSync(imageFolderPath)) {
       throw new Error(`Image folder not found: ${imageFolderPath}`)
     }
 
-    // Get all image files in the folder
+    // Get all image files in the folder (exclude edited versions from previous runs)
     const imageFiles = fs.readdirSync(imageFolderPath)
       .filter(file => /\.(jpg|jpeg|png|webp)$/i.test(file))
+      .filter(file => !file.startsWith('edited-') && !file.startsWith('retry-') && !file.startsWith('overlay-'))
       .sort()  // Sort to maintain consistent order
 
     if (imageFiles.length === 0) {
       throw new Error('No image files found in folder')
     }
 
-    console.log(`  → Found ${imageFiles.length} image(s), uploading all...`)
+    console.log(`  → Found ${imageFiles.length} image(s), processing...`)
 
-    // Upload ALL images
+    // Upload ALL images (with text translation if needed)
     const uploadedUrls = []
+    const OVERLAY_THRESHOLD = 5  // ≤5 → Qwen (aesthetic), >5 → Simple overlay
+
     for (let i = 0; i < imageFiles.length; i++) {
       const imageFile = imageFiles[i]
       const localImagePath = path.join(imageFolderPath, imageFile)
-      const buffer = fs.readFileSync(localImagePath)
+      let finalImagePath = localImagePath
+
+      // STEP A: Google Vision OCR + Haiku filter/translate (always, for every image)
+      const textAnalysis = await analyzeImageWithGoogle(localImagePath)
+      const overlayCount = textAnalysis.overlays ? textAnalysis.overlays.length : 0
+
+      // STEP B: Route based on overlay count
+      if (overlayCount > OVERLAY_THRESHOLD) {
+        // Dense infographics: Simple text overlay (deterministic, no validation needed)
+        console.log(`  📝 Image ${i + 1}/${imageFiles.length}: Simple overlay (${overlayCount} overlays)`)
+        const overlayPath = path.join(imageFolderPath, `overlay-${imageFile}`)
+        finalImagePath = await overlayTranslatedText(localImagePath, textAnalysis.overlays, overlayPath)
+
+      } else if (overlayCount > 0) {
+        // Few overlays: Qwen aesthetic edit + Haiku validation
+        console.log(`  🎨 Image ${i + 1}/${imageFiles.length}: Qwen edit (${overlayCount} overlay(s))`)
+        const editedPath = path.join(imageFolderPath, `edited-${imageFile}`)
+
+        // First attempt
+        let translatedPath = await editImageWithQwen(localImagePath, textAnalysis.overlays, editedPath)
+
+        // Only validate if Qwen actually produced a new file (not the original)
+        if (translatedPath !== localImagePath && fs.existsSync(translatedPath)) {
+          const validation = await validateImageTranslation(translatedPath, textAnalysis.overlays)
+
+          if (!validation.success) {
+            console.log(`  🔄 Retrying Qwen with enhanced instructions...`)
+            const retryPath = path.join(imageFolderPath, `retry-${imageFile}`)
+            translatedPath = await editImageWithQwen(localImagePath, textAnalysis.overlays, retryPath)
+
+            if (translatedPath !== localImagePath && fs.existsSync(translatedPath)) {
+              const retryValidation = await validateImageTranslation(translatedPath, textAnalysis.overlays)
+              if (!retryValidation.success) {
+                console.log(`  ⚠️  Qwen retry failed validation - falling back to simple overlay`)
+                const fallbackPath = path.join(imageFolderPath, `overlay-${imageFile}`)
+                translatedPath = await overlayTranslatedText(localImagePath, textAnalysis.overlays, fallbackPath)
+              }
+            } else {
+              // Qwen retry also failed to produce file
+              console.log(`  ⚠️  Qwen retry failed - falling back to simple overlay`)
+              const fallbackPath = path.join(imageFolderPath, `overlay-${imageFile}`)
+              translatedPath = await overlayTranslatedText(localImagePath, textAnalysis.overlays, fallbackPath)
+            }
+          }
+        } else {
+          // Qwen failed entirely - fall back to simple overlay
+          console.log(`  ⚠️  Qwen failed - falling back to simple overlay`)
+          const fallbackPath = path.join(imageFolderPath, `overlay-${imageFile}`)
+          translatedPath = await overlayTranslatedText(localImagePath, textAnalysis.overlays, fallbackPath)
+        }
+
+        finalImagePath = translatedPath
+      } else {
+        console.log(`  → Image ${i + 1}/${imageFiles.length}: No text overlays, using original`)
+      }
+
+      // STEP C: Upload final image (edited or original) to Supabase
+      const buffer = fs.readFileSync(finalImagePath)
 
       // Generate unique filename with index to preserve order
       const fileExt = path.extname(imageFile).slice(1) || 'jpg'
@@ -247,14 +368,34 @@ async function uploadAllImagesToSupabase(noteId) {
   }
 }
 
-// ─── STEP 3: BUILD SUPABASE RECORD ──────────────────────────────────
-function buildSupabaseRecord(post, filterResult, translation, hostedImageUrls) {
+// ─── HELPER: Normalize Weibo fields → XHS-compatible field names ────
+function normalizePost(post, platform) {
+  if (platform !== 'weibo') return post
   return {
+    ...post,
+    title: (post.content || '').substring(0, 50),
+    desc: post.content || '',
+    type: 'normal',
+    time: (post.create_time || 0) * 1000,   // seconds → milliseconds
+    comment_count: post.comments_count || '0',
+    share_count: post.shared_count || '0',
+    image_list: '',     // Weibo store doesn't capture image URLs
+    video_url: null,
+    tag_list: '',
+  }
+}
+
+// ─── STEP 3: BUILD SUPABASE RECORD ──────────────────────────────────
+function buildSupabaseRecord(post, filterResult, translation, hostedImageUrls, dubbedVideoUrl) {
+  return {
+    platform: post._platform || 'xiaohongshu',
+    author_avatar: post.avatar || null,
     Title: translation.title_en,
     description_en: translation.description_en,
     description_cn: post.desc,
-    image_url: hostedImageUrls[0] || null,  // First image for backwards compatibility
-    all_images: hostedImageUrls,  // Array of all image URLs
+    image_url: hostedImageUrls[0] || null,
+    all_images: hostedImageUrls.length > 0 ? hostedImageUrls : null,
+    video_url: dubbedVideoUrl || null,
     xiaohongshu_url: post.note_url,
     location_name: filterResult.extracted_address || post.ip_location || null,
     location_address: filterResult.extracted_address || null,
@@ -268,67 +409,204 @@ function buildSupabaseRecord(post, filterResult, translation, hostedImageUrls) {
 
 // ─── MAIN PIPELINE ──────────────────────────────────────────────────
 async function main() {
-  const inputPath = process.argv[2]
-  if (!inputPath) {
-    console.error('Usage: node scripts/process-xhs-posts.mjs <path-to-scraped-json>')
-    console.error('Example: node scripts/process-xhs-posts.mjs ../projects/xiaohongshu-scraper-test/data/xhs/json/search_contents_2026-02-09.json')
+  // Collect positional file paths (everything before first --flag)
+  const inputPaths = []
+  for (let i = 2; i < process.argv.length; i++) {
+    if (process.argv[i].startsWith('--')) break
+    inputPaths.push(process.argv[i])
+  }
+
+  if (inputPaths.length === 0) {
+    console.error('Usage: node scripts/process-xhs-posts.mjs <file1.json> [file2.json] [--limits N,M] [--limit N]')
+    console.error('Example (XHS only):    node scripts/process-xhs-posts.mjs ./scraper/data/xhs/json/search_contents_DATE.json --limit 15')
+    console.error('Example (XHS + Weibo): node scripts/process-xhs-posts.mjs ./scraper/data/xhs/json/FILE.json ./scraper/data/weibo/json/FILE.json --limits 15,5')
     process.exit(1)
   }
 
-  const resolvedPath = path.resolve(inputPath)
-  console.log(`\nReading scraped data from: ${resolvedPath}`)
+  // Parse --limits (per-source, comma-separated) or --limit (global fallback)
+  let perSourceLimits = []
+  const limitsIdx = process.argv.indexOf('--limits')
+  if (limitsIdx !== -1 && process.argv[limitsIdx + 1]) {
+    perSourceLimits = process.argv[limitsIdx + 1].split(',').map(n => parseInt(n, 10))
+  }
 
-  const raw = JSON.parse(fs.readFileSync(resolvedPath, 'utf-8'))
-  const posts = Array.isArray(raw) ? raw : [raw]
-  console.log(`Found ${posts.length} posts to process\n`)
+  let globalLimit = null
+  const limitIdx = process.argv.indexOf('--limit')
+  if (limitIdx !== -1 && process.argv[limitIdx + 1]) {
+    globalLimit = parseInt(process.argv[limitIdx + 1], 10)
+    if (isNaN(globalLimit) || globalLimit <= 0) globalLimit = null
+  }
+
+  // forceIds disabled — define empty set to avoid reference errors
+  const forceIds = new Set()
+
+  // Max videos per run (Demucs is slow on CI, cap to avoid timeout)
+  const MAX_VIDEOS = process.env.CI ? 7 : Infinity
+
+  // Load all sources, tagging each post with _platform and _scraperImagesDir
+  // JSON path: .../data/xhs/json/search_contents_DATE.json  → platform='xiaohongshu'
+  // JSON path: .../data/weibo/json/search_contents_DATE.json → platform='weibo'
+  const sources = []
+  for (const inputPath of inputPaths) {
+    const resolvedPath = path.resolve(inputPath)
+    const platformFolder = path.basename(path.dirname(path.dirname(resolvedPath)))
+    const platform = platformFolder === 'xhs' ? 'xiaohongshu' : platformFolder
+    const scraperImagesDir = path.join(path.dirname(path.dirname(resolvedPath)), 'images')
+
+    console.log(`\nReading ${platform} data from: ${resolvedPath}`)
+    const raw = JSON.parse(fs.readFileSync(resolvedPath, 'utf-8'))
+    const posts = (Array.isArray(raw) ? raw : [raw]).map(p => ({
+      ...normalizePost(p, platform),
+      _platform: platform,
+      _scraperImagesDir: scraperImagesDir,
+    }))
+    console.log(`Found ${posts.length} posts from ${platform}`)
+    sources.push({ posts, platform })
+  }
 
   const results = { accepted: [], rejected: [], errors: [] }
+  let totalCost = 0
+  let videoCount = 0
 
-  for (let i = 0; i < posts.length; i++) {
-    const post = posts[i]
-    const label = `[${i + 1}/${posts.length}]`
+  for (const [srcIdx, source] of sources.entries()) {
+    const { posts, platform } = source
+    const sourceLimit = perSourceLimits[srcIdx] ?? globalLimit
+    let sourceAccepted = 0
 
-    try {
-      // Step 1: Filter
-      console.log(`${label} Filtering: "${post.title.slice(0, 40)}..."`)
-      const filterResult = await filterPost(post)
-      console.log(`  → Score: ${filterResult.score}, Relevant: ${filterResult.relevant}, Category: ${filterResult.category}`)
-      console.log(`  → Reason: ${filterResult.reason}`)
+    if (sourceLimit) {
+      console.log(`\n⚠️  [${platform}] Limiting to ${sourceLimit} ACCEPTED posts\n`)
+    }
+    console.log(`\nProcessing ${posts.length} ${platform} posts...\n`)
 
-      if (!filterResult.relevant || filterResult.score < 40) {
-        console.log(`  ✗ Rejected\n`)
-        results.rejected.push({ note_id: post.note_id, title: post.title, ...filterResult })
-        continue
+    for (let i = 0; i < posts.length; i++) {
+      const post = posts[i]
+      const label = `[${platform}][${i + 1}/${posts.length}]`
+
+      // Stop if we've reached the accepted limit for this source
+      if (sourceLimit && sourceAccepted >= sourceLimit) {
+        console.log(`\n🎯 [${platform}] Reached limit of ${sourceLimit} accepted posts - stopping\n`)
+        break
       }
 
-      // Step 2: Translate
-      console.log(`  → Translating...`)
-      const translation = await translatePost(post, filterResult)
-      console.log(`  → EN Title: "${translation.title_en}"`)
+      try {
+        console.log(`${label} Checking: "${(post.title || '').slice(0, 40)}..."`)
 
-      // Step 2.5: Upload ALL local images to Supabase
-      let hostedImageUrls = []
-      const images = post.image_list ? post.image_list.split(',').filter(Boolean) : []
-      if (images.length > 0) {
-        hostedImageUrls = await uploadAllImagesToSupabase(post.note_id)
+        // Step 0a: Check for duplicates in database
+        const { data: existingPost } = await supabase
+          .from('Post')
+          .select('id')
+          .eq('id', post.note_id)
+          .maybeSingle()
+
+        if (existingPost) {
+          console.log(`  ⏭️  Already exists in database - skipping\n`)
+          results.rejected.push({
+            note_id: post.note_id,
+            title: post.title,
+            reason: 'Duplicate - already in database',
+            relevant: false,
+            score: 0,
+            category: 'duplicate'
+          })
+          continue
+        }
+
+        // Step 1: Filter
+        console.log(`  → Filtering...`)
+        const filterResult = await filterPost(post)
+        console.log(`  → Score: ${filterResult.score}, Relevant: ${filterResult.relevant}, Category: ${filterResult.category}`)
+        console.log(`  → Reason: ${filterResult.reason}`)
+
+        if ((!filterResult.relevant || filterResult.score < 40) && !forceIds.has(post.note_id)) {
+          console.log(`  ✗ Rejected: ${filterResult.reason}\n`)
+          results.rejected.push({ note_id: post.note_id, title: post.title, ...filterResult })
+          continue
+        }
+
+        if (forceIds.has(post.note_id) && (!filterResult.relevant || filterResult.score < 40)) {
+          console.log(`  ⚡ Force-included (would have been rejected: ${filterResult.reason})`)
+        }
+
+        // Step 2: Translate
+        console.log(`  → Translating...`)
+        const translation = await translatePost(post, filterResult)
+        console.log(`  → EN Title: "${translation.title_en}"`)
+
+        let record
+
+        if (post.type === 'video' && post._platform !== 'weibo') {
+          // ── VIDEO (XHS only): Download → Dub → Upload ─────────────────────
+          if (videoCount >= MAX_VIDEOS) {
+            console.log(`  ⏭️  Video cap reached (${MAX_VIDEOS}/run on CI) - skipping\n`)
+            results.rejected.push({ note_id: post.note_id, title: post.title, reason: 'Video cap reached', score: filterResult.score })
+            continue
+          }
+
+          console.log(`  🎬 Video post — starting dubbing pipeline...`)
+
+          if (!post.video_url) {
+            throw new Error('Video post has no video_url')
+          }
+
+          // Download video from CDN
+          const tempDir = path.resolve(import.meta.dirname, '..', 'data', 'temp-videos')
+          fs.mkdirSync(tempDir, { recursive: true })
+          const rawVideoPath = path.join(tempDir, `${post.note_id}.mp4`)
+          console.log(`  → Downloading video...`)
+          await downloadVideo(post.video_url, rawVideoPath)
+
+          // Skip videos longer than 60 seconds (too slow to dub on CI)
+          const videoDuration = await getVideoDuration(rawVideoPath)
+          if (videoDuration > 60) {
+            console.log(`  ⏭️  Video too long (${videoDuration.toFixed(0)}s > 60s) - skipping\n`)
+            fs.unlinkSync(rawVideoPath)
+            results.rejected.push({ note_id: post.note_id, title: post.title, reason: `Video too long (${videoDuration.toFixed(0)}s)`, score: filterResult.score })
+            continue
+          }
+          console.log(`  → Duration: ${videoDuration.toFixed(0)}s — OK`)
+
+          // Run dubbing pipeline
+          const videoOutputDir = path.resolve(import.meta.dirname, '..', 'data', 'video-processing', post.note_id)
+          const { dubbedVideoPath, cost: videoCost } = await dubVideo(rawVideoPath, videoOutputDir)
+          totalCost += videoCost
+
+          // Upload dubbed video to Supabase storage
+          console.log(`  → Uploading dubbed video to Supabase...`)
+          const dubbedVideoUrl = await uploadVideoToSupabase(dubbedVideoPath, post.note_id)
+          console.log(`  → Uploaded: ${dubbedVideoUrl}`)
+
+          // Clean up temp raw video
+          fs.unlinkSync(rawVideoPath)
+          videoCount++
+
+          record = buildSupabaseRecord(post, filterResult, translation, [], dubbedVideoUrl)
+
+        } else {
+          // ── IMAGE / TEXT (or Weibo — text only, no media download) ────────
+          let hostedImageUrls = []
+          const images = post.image_list ? post.image_list.split(',').filter(Boolean) : []
+          if (images.length > 0 && post._platform !== 'weibo') {
+            hostedImageUrls = await uploadAllImagesToSupabase(post.note_id, post._scraperImagesDir)
+          }
+          record = buildSupabaseRecord(post, filterResult, translation, hostedImageUrls, null)
+        }
+
+        results.accepted.push({
+          record,
+          score: filterResult.score,
+          filter: filterResult,
+          original: { note_id: post.note_id, title: post.title }
+        })
+        sourceAccepted++
+        console.log(`  ✓ Accepted (score: ${filterResult.score})\n`)
+
+        // Rate limit: ~1 second between posts to avoid API throttling
+        if (i < posts.length - 1) await sleep(1000)
+
+      } catch (err) {
+        console.error(`  ✗ Error: ${err.message}\n`)
+        results.errors.push({ note_id: post.note_id, title: post.title, error: err.message })
       }
-
-      // Step 3: Build record
-      const record = buildSupabaseRecord(post, filterResult, translation, hostedImageUrls)
-      results.accepted.push({
-        record,
-        score: filterResult.score,
-        filter: filterResult,
-        original: { note_id: post.note_id, title: post.title }
-      })
-      console.log(`  ✓ Accepted (score: ${filterResult.score})\n`)
-
-      // Rate limit: ~1 second between posts to avoid API throttling
-      if (i < posts.length - 1) await sleep(1000)
-
-    } catch (err) {
-      console.error(`  ✗ Error: ${err.message}\n`)
-      results.errors.push({ note_id: post.note_id, title: post.title, error: err.message })
     }
   }
 
@@ -338,6 +616,7 @@ async function main() {
   console.log(`  Accepted: ${results.accepted.length}`)
   console.log(`  Rejected: ${results.rejected.length}`)
   console.log(`  Errors:   ${results.errors.length}`)
+  console.log(`  Total cost: $${totalCost.toFixed(4)}`)
   console.log('═'.repeat(60))
 
   if (results.accepted.length === 0) {

@@ -83,13 +83,17 @@ USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name
 START_PAGE = 1
 
 # 爬取视频/帖子的数量控制
-CRAWLER_MAX_NOTES_COUNT = 15
+CRAWLER_MAX_NOTES_COUNT = 40
 
 # 并发爬虫数量控制
 MAX_CONCURRENCY_NUM = 1
 
 # 是否开启爬媒体模式（包含图片或视频资源），默认不开启爬媒体
 ENABLE_GET_MEIDAS = True
+
+# 搜索笔记类型: 0=全部(image+video), 1=仅视频, 2=仅图文
+# SearchNoteType enum in media_platform/xhs/field.py
+SEARCH_NOTE_TYPE = 0  # ALL — scrape both normal posts and videos
 
 # 是否开启爬评论模式, 默认开启爬评论
 ENABLE_GET_COMMENTS = True
