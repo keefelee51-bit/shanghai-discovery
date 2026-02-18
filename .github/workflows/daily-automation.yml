@@ -85,11 +85,16 @@ jobs:
         run: |
           echo "Configuring MediaCrawler for cookie authentication..."
 
-          # Update config to use cookie login
-          sed -i 's/LOGIN_TYPE = "qrcode"/LOGIN_TYPE = "cookie"/' config/base_config.py
-
-          # Inject cookies from GitHub Secret
-          sed -i "s|COOKIES = \"\"|COOKIES = \"$XHS_COOKIES\"|" config/base_config.py
+          # Inject XHS cookies from GitHub Secret using Python (handles special chars safely)
+          python3 -c "
+          import re, os
+          cookies = os.environ['XHS_COOKIES']
+          with open('config/base_config.py', 'r') as f:
+              content = f.read()
+          content = re.sub(r'COOKIES = \".*?\"', f'COOKIES = \"{cookies}\"', content, count=1)
+          with open('config/base_config.py', 'w') as f:
+              f.write(content)
+          "
 
           echo "✓ Cookie authentication configured"
 
@@ -114,9 +119,16 @@ jobs:
         env:
           WEIBO_COOKIES: ${{ secrets.WEIBO_COOKIES }}
         run: |
-          # Reset to empty cookies first (clears XHS cookies), then inject Weibo cookies
-          sed -i 's|COOKIES = "[^"]*"|COOKIES = ""|' config/base_config.py
-          sed -i "s|COOKIES = \"\"|COOKIES = \"$WEIBO_COOKIES\"|" config/base_config.py
+          # Replace cookies with Weibo cookies using Python (handles special chars safely)
+          python3 -c "
+          import re, os
+          cookies = os.environ['WEIBO_COOKIES']
+          with open('config/base_config.py', 'r') as f:
+              content = f.read()
+          content = re.sub(r'COOKIES = \".*?\"', f'COOKIES = \"{cookies}\"', content, count=1)
+          with open('config/base_config.py', 'w') as f:
+              f.write(content)
+          "
           echo "✓ Weibo cookies configured"
 
       # ─────────────────────────────────────────────────────────────
