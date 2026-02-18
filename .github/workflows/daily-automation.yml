@@ -86,15 +86,18 @@ jobs:
           echo "Configuring MediaCrawler for cookie authentication..."
 
           # Inject XHS cookies from GitHub Secret using Python (handles special chars safely)
-          python3 -c "
-          import re, os
-          cookies = os.environ['XHS_COOKIES']
+          python3 << 'PYEOF'
+          import os
+          cookies = os.environ['XHS_COOKIES'].replace('\\', '\\\\').replace('"', '\\"')
           with open('config/base_config.py', 'r') as f:
-              content = f.read()
-          content = re.sub(r'COOKIES = \".*?\"', f'COOKIES = \"{cookies}\"', content, count=1)
+              lines = f.readlines()
           with open('config/base_config.py', 'w') as f:
-              f.write(content)
-          "
+              for line in lines:
+                  if line.startswith('COOKIES = '):
+                      f.write(f'COOKIES = "{cookies}"\n')
+                  else:
+                      f.write(line)
+          PYEOF
 
           echo "✓ Cookie authentication configured"
 
@@ -120,15 +123,18 @@ jobs:
           WEIBO_COOKIES: ${{ secrets.WEIBO_COOKIES }}
         run: |
           # Replace cookies with Weibo cookies using Python (handles special chars safely)
-          python3 -c "
-          import re, os
-          cookies = os.environ['WEIBO_COOKIES']
+          python3 << 'PYEOF'
+          import os
+          cookies = os.environ['WEIBO_COOKIES'].replace('\\', '\\\\').replace('"', '\\"')
           with open('config/base_config.py', 'r') as f:
-              content = f.read()
-          content = re.sub(r'COOKIES = \".*?\"', f'COOKIES = \"{cookies}\"', content, count=1)
+              lines = f.readlines()
           with open('config/base_config.py', 'w') as f:
-              f.write(content)
-          "
+              for line in lines:
+                  if line.startswith('COOKIES = '):
+                      f.write(f'COOKIES = "{cookies}"\n')
+                  else:
+                      f.write(line)
+          PYEOF
           echo "✓ Weibo cookies configured"
 
       # ─────────────────────────────────────────────────────────────
