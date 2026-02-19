@@ -45,6 +45,8 @@ jobs:
         working-directory: scraper
         run: |
           pip install -r requirements.txt
+          # Install CPU-only torch FIRST to avoid downloading the 2GB CUDA version
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install demucs
           echo "✓ Python dependencies installed"
 
@@ -53,8 +55,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: Install Playwright browsers
         run: |
-          playwright install chromium
-          playwright install-deps chromium
+          playwright install --with-deps chromium
           echo "✓ Playwright browsers installed"
 
       # ─────────────────────────────────────────────────────────────
@@ -72,8 +73,13 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
         run: |
-          echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
-          echo "✓ Google Vision credentials written"
+          if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
+            echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
+            echo "✓ Google Vision credentials written"
+          else
+            echo "⚠️  GOOGLE_CREDENTIALS_JSON not set — image text translation will be skipped"
+            echo "{}" > google-vision-key.json
+          fi
 
       # ─────────────────────────────────────────────────────────────
       # STEP 6: Configure scraper with cookies (NO QR CODE NEEDED!)
