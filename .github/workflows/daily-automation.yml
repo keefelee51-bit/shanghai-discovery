@@ -21,6 +21,16 @@ jobs:
 
     steps:
       # ─────────────────────────────────────────────────────────────
+      # STEP 0: Add Git Bash to PATH (Windows self-hosted runner only)
+      # The runner can't find 'bash' because Git's bin folder isn't in
+      # its PATH by default. This step uses cmd (always available on
+      # Windows) to add Git Bash so all subsequent steps can use it.
+      # ─────────────────────────────────────────────────────────────
+      - name: Add Git Bash to PATH
+        shell: cmd
+        run: echo C:\Program Files\Git\bin>> %GITHUB_PATH%
+
+      # ─────────────────────────────────────────────────────────────
       # STEP 1: Checkout repository (everything in one repo now!)
       # ─────────────────────────────────────────────────────────────
       - name: Checkout repository
