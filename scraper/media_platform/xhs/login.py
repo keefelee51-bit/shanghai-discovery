@@ -213,12 +213,26 @@ class XiaoHongShuLogin(AbstractLogin):
     async def login_by_cookies(self):
         """login xiaohongshu website by cookies"""
         utils.logger.info("[XiaoHongShuLogin.login_by_cookies] Begin login xiaohongshu by cookie ...")
+
+        # Set ALL cookies (not just web_session) into the browser context.
+        # XHS request signing needs a1 and other cookies to be present in the browser.
+        all_cookies = []
         for key, value in utils.convert_str_cookie_to_dict(self.cookie_str).items():
-            if key != "web_session":  # Only set web_session cookie attribute
-                continue
-            await self.browser_context.add_cookies([{
+            all_cookies.append({
                 'name': key,
                 'value': value,
                 'domain': ".xiaohongshu.com",
                 'path': "/"
-            }])
+            })
+        if all_cookies:
+            await self.browser_context.add_cookies(all_cookies)
+
+        # Reload the page now that cookies are set.
+        # WHY: The page first loaded WITHOUT cookies, so XHS stored an anonymous "b1"
+        # fingerprint in localStorage. b1 is embedded in every signed API request.
+        # If b1 is from an anonymous session but the cookie is from an authenticated one,
+        # XHS rejects requests with "login expired". Reloading with cookies lets
+        # XHS JS set the correct authenticated b1 in localStorage.
+        utils.logger.info("[XiaoHongShuLogin.login_by_cookies] Reloading page with cookies to fix b1 in localStorage ...")
+        await self.context_page.goto("https://www.xiaohongshu.com", wait_until="domcontentloaded")
+        await self.context_page.wait_for_timeout(2000)  # give XHS JS time to set b1
