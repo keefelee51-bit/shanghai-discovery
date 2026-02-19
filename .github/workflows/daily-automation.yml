@@ -11,6 +11,14 @@ jobs:
   scrape-and-process:
     runs-on: self-hosted
 
+    # Force bash on all steps.
+    # The workflow uses Linux bash syntax (if [ -f ... ], ls -t, etc.)
+    # Windows self-hosted runners default to PowerShell which can't run this.
+    # Git Bash (installed with Git for Windows) handles it correctly.
+    defaults:
+      run:
+        shell: bash
+
     steps:
       # ─────────────────────────────────────────────────────────────
       # STEP 1: Checkout repository (everything in one repo now!)
