@@ -2,7 +2,7 @@ name: Daily Content Pipeline
 
 on:
   # schedule:
-  #   - cron: '0 2 * * *'  # Uncomment for fully automatic daily runs
+  #   - cron: '0 2 */5 * *'  # Uncomment for fully automatic daily runs
   workflow_dispatch:  # Manual trigger from GitHub Actions tab
 
 jobs:
