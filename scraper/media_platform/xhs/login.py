@@ -227,6 +227,11 @@ class XiaoHongShuLogin(AbstractLogin):
         if all_cookies:
             await self.browser_context.add_cookies(all_cookies)
 
+        # Clear stale localStorage (e.g. old anonymous b1 from a previous run stored in
+        # the persistent user_data_dir) BEFORE reloading so XHS JS generates a fresh b1
+        # with the authenticated session instead of reusing a stale anonymous one.
+        await self.context_page.evaluate("() => localStorage.clear()")
+
         # Reload the page now that cookies are set.
         # WHY: The page first loaded WITHOUT cookies, so XHS stored an anonymous "b1"
         # fingerprint in localStorage. b1 is embedded in every signed API request.
@@ -234,5 +239,5 @@ class XiaoHongShuLogin(AbstractLogin):
         # XHS rejects requests with "login expired". Reloading with cookies lets
         # XHS JS set the correct authenticated b1 in localStorage.
         utils.logger.info("[XiaoHongShuLogin.login_by_cookies] Reloading page with cookies to fix b1 in localStorage ...")
-        await self.context_page.goto("https://www.xiaohongshu.com", wait_until="domcontentloaded")
-        await self.context_page.wait_for_timeout(2000)  # give XHS JS time to set b1
+        await self.context_page.goto("https://www.xiaohongshu.com", wait_until="load")
+        await self.context_page.wait_for_timeout(3000)  # give XHS JS time to set b1
