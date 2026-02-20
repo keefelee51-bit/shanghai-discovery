@@ -1,44 +1,24 @@
 name: Daily Content Pipeline
 
-# Runs daily at 2 AM UTC (10 AM Shanghai time)
-# Can also be triggered manually from GitHub Actions tab
 on:
-  schedule:
-    - cron: '0 2 * * *'  # 2 AM UTC daily
-  workflow_dispatch:  # Allows manual trigger
+  # schedule:
+  #   - cron: '0 2 * * *'  # Uncomment for fully automatic daily runs
+  workflow_dispatch:  # Manual trigger from GitHub Actions tab
 
 jobs:
   scrape-and-process:
-    runs-on: self-hosted
-
-    # Force bash on all steps.
-    # The workflow uses Linux bash syntax (if [ -f ... ], ls -t, etc.)
-    # Windows self-hosted runners default to PowerShell which can't run this.
-    # Git Bash (installed with Git for Windows) handles it correctly.
-    defaults:
-      run:
-        shell: bash
+    runs-on: ubuntu-latest
 
     steps:
-      # ─────────────────────────────────────────────────────────────
-      # STEP 0: Add Git Bash to PATH (Windows self-hosted runner only)
-      # The runner can't find 'bash' because Git's bin folder isn't in
-      # its PATH by default. This step uses cmd (always available on
-      # Windows) to add Git Bash so all subsequent steps can use it.
-      # ─────────────────────────────────────────────────────────────
-      - name: Add Git Bash to PATH
-        shell: cmd
-        run: echo C:\Program Files\Git\bin>> %GITHUB_PATH%
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 1 — Minimum setup needed to run the scraper
+      # Goal: get to scraping as fast as possible so a bad cookie
+      # fails in ~2 minutes instead of ~12.
+      # ══════════════════════════════════════════════════════════════
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 1: Checkout repository (everything in one repo now!)
-      # ─────────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 2: Setup Python for scraper (MediaCrawler)
-      # ─────────────────────────────────────────────────────────────
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -46,64 +26,21 @@ jobs:
           cache: 'pip'
           cache-dependency-path: scraper/requirements.txt
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 3: Setup Node.js for processing scripts
-      # ─────────────────────────────────────────────────────────────
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-          cache: 'npm'
-          
-
-      # ─────────────────────────────────────────────────────────────
-      # STEP 4: Install Python dependencies (scraper)
-      # ─────────────────────────────────────────────────────────────
+      # Install only the scraper's own dependencies (no torch, no demucs yet)
       - name: Install scraper dependencies
         working-directory: scraper
-        run: |
-          pip install -r requirements.txt
-          # Install CPU-only torch FIRST to avoid downloading the 2GB CUDA version
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install demucs
-          echo "✓ Python dependencies installed"
+        run: pip install -r requirements.txt
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 4.5: Install Playwright browsers
-      # ─────────────────────────────────────────────────────────────
-      - name: Install Playwright browsers
-        run: |
-          playwright install --with-deps chromium
-          echo "✓ Playwright browsers installed"
+      # Download the Chromium browser binary — required for Playwright scraping
+      - name: Install Playwright browser
+        run: playwright install --with-deps chromium
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 5: Install Node.js dependencies (main project)
-      # ─────────────────────────────────────────────────────────────
-      - name: Install Node.js dependencies
-        run: |
-          npm ci
-          echo "✓ Node.js dependencies installed"
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 2 — Scrape (fail fast if cookies are bad)
+      # If XHS cookies are stale the job dies here, saving all the
+      # torch / npm install time below.
+      # ══════════════════════════════════════════════════════════════
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 5.5: Write Google Vision credentials file
-      # ─────────────────────────────────────────────────────────────
-      - name: Setup Google Vision credentials
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        run: |
-          if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
-            echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
-            echo "✓ Google Vision credentials written"
-          else
-            echo "⚠️  GOOGLE_CREDENTIALS_JSON not set — image text translation will be skipped"
-            echo "{}" > google-vision-key.json
-          fi
-
-      # ─────────────────────────────────────────────────────────────
-      # STEP 6: Configure scraper with cookies (NO QR CODE NEEDED!)
-      # ─────────────────────────────────────────────────────────────
-      # STEP 7: Run XHS scraper (cookies passed via env var)
-      # ─────────────────────────────────────────────────────────────
       - name: Run XHS scraper
         id: scrape
         working-directory: scraper
@@ -113,12 +50,9 @@ jobs:
         run: |
           echo "Starting XHS scraper..."
           python main.py --platform xhs --lt cookie --type search
-          echo "✓ XHS scraping completed"
+          echo "XHS scraping done"
         timeout-minutes: 30
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 7.5: Run Weibo scraper (cookies passed via env var)
-      # ─────────────────────────────────────────────────────────────
       - name: Run Weibo scraper
         id: scrape-weibo
         working-directory: scraper
@@ -128,12 +62,9 @@ jobs:
         run: |
           echo "Starting Weibo scraper..."
           python main.py --platform wb --lt cookie --type search
-          echo "✓ Weibo scraping completed"
+          echo "Weibo scraping done"
         timeout-minutes: 20
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 7.7: Verify Weibo data
-      # ─────────────────────────────────────────────────────────────
       - name: Verify Weibo data
         id: verify-weibo
         working-directory: scraper
@@ -141,39 +72,67 @@ jobs:
         run: |
           LATEST=$(ls -t data/weibo/json/search_contents_*.json 2>/dev/null | head -n 1)
           if [ -z "$LATEST" ]; then
-            echo "⚠️  No Weibo data found — XHS-only run"
+            echo "No Weibo data — XHS-only run"
             echo "weibo_file=" >> $GITHUB_OUTPUT
           else
             COUNT=$(node -pe "require('./$LATEST').length")
-            echo "✓ Found $COUNT Weibo posts in $LATEST"
+            echo "Found $COUNT Weibo posts in $LATEST"
             echo "weibo_file=$LATEST" >> $GITHUB_OUTPUT
           fi
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 8: Verify scraped data
-      # ─────────────────────────────────────────────────────────────
-      - name: Verify scraped data
+      # Hard stop here if XHS scraping produced nothing
+      - name: Verify XHS scraped data
         id: verify
         working-directory: scraper
         run: |
-          echo "Checking for scraped data..."
-
-          # Find the most recent scraped file
           LATEST_FILE=$(ls -t data/xhs/json/search_contents_*.json 2>/dev/null | head -n 1)
-
           if [ -z "$LATEST_FILE" ]; then
-            echo "❌ No scraped data found!"
+            echo "No XHS data found — cookies are likely expired. Update XHS_COOKIES secret and re-run."
             exit 1
           fi
-
           POST_COUNT=$(node -pe "require('./$LATEST_FILE').length")
-          echo "✓ Found $POST_COUNT posts in $LATEST_FILE"
+          echo "Found $POST_COUNT posts in $LATEST_FILE"
           echo "scraped_file=$LATEST_FILE" >> $GITHUB_OUTPUT
           echo "post_count=$POST_COUNT" >> $GITHUB_OUTPUT
 
-      # ─────────────────────────────────────────────────────────────
-      # STEP 9: Process posts (Filter & Translate with Claude API)
-      # ─────────────────────────────────────────────────────────────
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 3 — Install processing dependencies
+      # Only reached if scraping succeeded, so this time is never
+      # wasted on a bad-cookie run.
+      # ══════════════════════════════════════════════════════════════
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install Node.js dependencies
+        run: npm ci
+
+      # CPU-only torch to avoid the 2 GB CUDA download
+      - name: Install audio processing dependencies
+        working-directory: scraper
+        run: |
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          pip install demucs
+
+      - name: Setup Google Vision credentials
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
+            echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
+            echo "Google Vision credentials written"
+          else
+            echo "GOOGLE_CREDENTIALS_JSON not set — image text translation skipped"
+            echo "{}" > google-vision-key.json
+          fi
+
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 4 — Process and upload
+      # ══════════════════════════════════════════════════════════════
+
       - name: Process posts with Claude API
         env:
           VITE_ANTHROPIC_API_KEY: ${{ secrets.VITE_ANTHROPIC_API_KEY }}
@@ -195,53 +154,40 @@ jobs:
             node scripts/process-xhs-posts.mjs "$XHS_FILE" --limit 15
           fi
 
-          echo "✓ Processing completed"
-
-      # ─────────────────────────────────────────────────────────────
-      # STEP 10: Upload to Supabase
-      # ─────────────────────────────────────────────────────────────
       - name: Upload to Supabase
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-        run: |
-          echo "Uploading processed posts to Supabase..."
-          node scripts/upload-to-supabase.mjs
-          echo "✓ Upload completed"
-          
-      # ───────────────────────────────────
-      # STEP 11: Pipeline Summary
-      # ─────────────────────────────────────────────────────────────
+        run: node scripts/upload-to-supabase.mjs
+
+      # ══════════════════════════════════════════════════════════════
+      # ALWAYS — Summary + artifacts (runs even on failure)
+      # ══════════════════════════════════════════════════════════════
+
       - name: Pipeline Summary
         if: always()
         run: |
-          echo "════════════════════════════════════════"
-          echo "DAILY PIPELINE SUMMARY"
-          echo "════════════════════════════════════════"
-
+          echo "========================================"
+          echo "PIPELINE SUMMARY"
+          echo "========================================"
           if [ -f "data/pipeline-output.json" ]; then
             ACCEPTED=$(node -pe "require('./data/pipeline-output.json').accepted?.length || 0")
             REJECTED=$(node -pe "require('./data/pipeline-output.json').rejected?.length || 0")
             ERRORS=$(node -pe "require('./data/pipeline-output.json').errors?.length || 0")
-
             echo "Scraped:  ${{ steps.verify.outputs.post_count }} posts"
-            echo "Accepted: $ACCEPTED posts"
-            echo "Rejected: $REJECTED posts"
-            echo "Errors:   $ERRORS posts"
+            echo "Accepted: $ACCEPTED"
+            echo "Rejected: $REJECTED"
+            echo "Errors:   $ERRORS"
           else
-            echo "⚠️  Pipeline output not found"
+            echo "Pipeline output not found"
           fi
+          echo "========================================"
 
-          echo "════════════════════════════════════════"
-
-      # ─────────────────────────────────────────────────────────────
-      # STEP 12: Upload artifacts (for debugging)
-      # ─────────────────────────────────────────────────────────────
-      - name: Upload pipeline results
+      - name: Upload pipeline artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-results-${{ github.run_number }}
+          name: pipeline-results-${{ github.run_number }}-${{ github.run_attempt }}
           path: |
             data/pipeline-output.json
             scraper/data/xhs/json/*.json
