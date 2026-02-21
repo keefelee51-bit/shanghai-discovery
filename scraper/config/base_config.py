@@ -84,7 +84,8 @@ USER_DATA_DIR = "%s_user_data_dir"  # %s will be replaced by platform name
 START_PAGE = 1
 
 # 爬取视频/帖子的数量控制
-CRAWLER_MAX_NOTES_COUNT = 40
+# Can be overridden per-platform via CRAWLER_MAX_NOTES_COUNT env var
+CRAWLER_MAX_NOTES_COUNT = int(os.environ.get("CRAWLER_MAX_NOTES_COUNT", "40"))
 
 # 并发爬虫数量控制
 MAX_CONCURRENCY_NUM = 1

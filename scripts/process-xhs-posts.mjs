@@ -118,9 +118,10 @@ async function filterPost(post) {
   const imageCount = post.image_list ? post.image_list.split(',').filter(Boolean).length : 0
   const publishDate = new Date(post.time)
 
+  const isWeibo = post._platform === 'weibo'
   const prompt = `
-Analyze this Xiaohongshu post and decide if it's relevant for Shanghai Discovery.
-
+Analyze this ${isWeibo ? 'Weibo' : 'Xiaohongshu'} post and decide if it's relevant for Shanghai Discovery.
+${isWeibo ? '\nNOTE: This is a Weibo post. Weibo posts do not have images captured by our scraper — do NOT penalize the score for missing images. Judge purely on text content, engagement, and location relevance.' : ''}
 POST DATA:
 - Title: ${post.title}
 - Description: ${post.desc}
@@ -130,7 +131,7 @@ POST DATA:
 - Comments: ${post.comment_count}
 - Location (IP): ${post.ip_location}
 - Published: ${publishDate.toISOString()}
-- Image count: ${imageCount}
+${isWeibo ? '- Images: not available for Weibo posts' : `- Image count: ${imageCount}`}
 - Author: ${post.nickname}
 
 ${FILTERING_KNOWLEDGE}

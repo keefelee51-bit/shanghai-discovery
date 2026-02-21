@@ -129,6 +129,7 @@ jobs:
         continue-on-error: true
         env:
           COOKIES: ${{ secrets.WEIBO_COOKIES }}
+          CRAWLER_MAX_NOTES_COUNT: "80"
         run: |
           echo "Starting Weibo scraper..."
           python main.py --platform wb --lt cookie --type search
@@ -206,7 +207,7 @@ jobs:
 
           if [ -n "$WEIBO_FILE" ]; then
             echo "Processing XHS + Weibo posts (limits: 15 XHS, 10 Weibo)..."
-            node scripts/process-xhs-posts.mjs "$XHS_FILE" "./scraper/$WEIBO_FILE" --limits 15,10
+            node scripts/process-xhs-posts.mjs "$XHS_FILE" "./scraper/$WEIBO_FILE" --limits 15,20
           else
             echo "Processing XHS-only posts (limit: 15)..."
             node scripts/process-xhs-posts.mjs "$XHS_FILE" --limit 15
