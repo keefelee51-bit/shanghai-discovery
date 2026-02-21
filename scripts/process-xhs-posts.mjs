@@ -244,6 +244,7 @@ async function uploadVideoToSupabase(videoPath, noteId) {
 
 // ─── STEP 2.5: READ LOCAL IMAGES, TRANSLATE TEXT, & UPLOAD TO SUPABASE STORAGE ────────
 async function uploadAllImagesToSupabase(noteId, scraperImagesDir) {
+  const errors = []
   try {
     // scraperImagesDir is derived from the input JSON path (works both locally and on GitHub Actions)
     const imageFolderPath = path.join(scraperImagesDir, noteId)
@@ -273,9 +274,17 @@ async function uploadAllImagesToSupabase(noteId, scraperImagesDir) {
       const imageFile = imageFiles[i]
       const localImagePath = path.join(imageFolderPath, imageFile)
       let finalImagePath = localImagePath
+      const imgLabel = `img${i + 1}/${imageFiles.length}`
 
       // STEP A: Google Vision OCR + Haiku filter/translate (always, for every image)
-      const textAnalysis = await analyzeImageWithGoogle(localImagePath)
+      // Wrapped in its own try/catch so one Vision failure doesn't kill all images
+      let textAnalysis = { overlays: [] }
+      try {
+        textAnalysis = await analyzeImageWithGoogle(localImagePath)
+      } catch (visionErr) {
+        errors.push(`google_vision[${imgLabel}]: ${visionErr.message}`)
+        console.warn(`  ⚠️  Google Vision failed for ${imgLabel}: ${visionErr.message} — skipping text overlay`)
+      }
       const overlayCount = textAnalysis.overlays ? textAnalysis.overlays.length : 0
 
       // STEP B: Route based on overlay count
@@ -306,12 +315,14 @@ async function uploadAllImagesToSupabase(noteId, scraperImagesDir) {
               const retryValidation = await validateImageTranslation(translatedPath, textAnalysis.overlays)
               if (!retryValidation.success) {
                 console.log(`  ⚠️  Qwen retry failed validation - falling back to simple overlay`)
+                errors.push(`qwen_edit[${imgLabel}]: retry failed validation — fell back to simple overlay`)
                 const fallbackPath = path.join(imageFolderPath, `overlay-${imageFile}`)
                 translatedPath = await overlayTranslatedText(localImagePath, textAnalysis.overlays, fallbackPath)
               }
             } else {
               // Qwen retry also failed to produce file
               console.log(`  ⚠️  Qwen retry failed - falling back to simple overlay`)
+              errors.push(`qwen_edit[${imgLabel}]: retry produced no file — fell back to simple overlay`)
               const fallbackPath = path.join(imageFolderPath, `overlay-${imageFile}`)
               translatedPath = await overlayTranslatedText(localImagePath, textAnalysis.overlays, fallbackPath)
             }
@@ -319,6 +330,7 @@ async function uploadAllImagesToSupabase(noteId, scraperImagesDir) {
         } else {
           // Qwen failed entirely - fall back to simple overlay
           console.log(`  ⚠️  Qwen failed - falling back to simple overlay`)
+          errors.push(`qwen_edit[${imgLabel}]: failed to produce file — fell back to simple overlay`)
           const fallbackPath = path.join(imageFolderPath, `overlay-${imageFile}`)
           translatedPath = await overlayTranslatedText(localImagePath, textAnalysis.overlays, fallbackPath)
         }
@@ -344,6 +356,7 @@ async function uploadAllImagesToSupabase(noteId, scraperImagesDir) {
         })
 
       if (error) {
+        errors.push(`supabase_storage[${imgLabel}]: ${error.message}`)
         console.warn(`  ⚠️  Failed to upload image ${i + 1}/${imageFiles.length}: ${error.message}`)
         continue  // Skip this image but continue with others
       }
@@ -357,15 +370,16 @@ async function uploadAllImagesToSupabase(noteId, scraperImagesDir) {
     }
 
     if (uploadedUrls.length === 0) {
-      throw new Error('All image uploads failed')
+      errors.push('supabase_storage: all image uploads failed — post accepted with no images')
     }
 
     console.log(`  → Successfully uploaded ${uploadedUrls.length}/${imageFiles.length} image(s)`)
-    return uploadedUrls  // Return array of URLs
+    return { urls: uploadedUrls, errors }
 
   } catch (err) {
+    errors.push(`image_pipeline: ${err.message}`)
     console.error(`  ⚠️  Image upload failed: ${err.message}`)
-    return []  // Return empty array on failure
+    return { urls: [], errors }
   }
 }
 
@@ -387,7 +401,7 @@ function normalizePost(post, platform) {
 }
 
 // ─── STEP 3: BUILD SUPABASE RECORD ──────────────────────────────────
-function buildSupabaseRecord(post, filterResult, translation, hostedImageUrls, dubbedVideoUrl) {
+function buildSupabaseRecord(post, filterResult, translation, hostedImageUrls, dubbedVideoUrl, postErrors = []) {
   return {
     platform: post._platform || 'xiaohongshu',
     author_avatar: post.avatar || null,
@@ -405,6 +419,7 @@ function buildSupabaseRecord(post, filterResult, translation, hostedImageUrls, d
     type: post.type === 'video' ? 'video' : 'image',
     practical_tips: translation.practical_tips,
     original_author: post.nickname,
+    pipeline_errors: postErrors.length > 0 ? postErrors : null,
   }
 }
 
@@ -533,6 +548,7 @@ async function main() {
         const translation = await translatePost(post, filterResult)
         console.log(`  → EN Title: "${translation.title_en}"`)
 
+        const postErrors = []
         let record
 
         if (post.type === 'video' && post._platform !== 'weibo') {
@@ -580,16 +596,18 @@ async function main() {
           fs.unlinkSync(rawVideoPath)
           videoCount++
 
-          record = buildSupabaseRecord(post, filterResult, translation, [], dubbedVideoUrl)
+          record = buildSupabaseRecord(post, filterResult, translation, [], dubbedVideoUrl, postErrors)
 
         } else {
           // ── IMAGE / TEXT (or Weibo — text only, no media download) ────────
           let hostedImageUrls = []
           const images = post.image_list ? post.image_list.split(',').filter(Boolean) : []
           if (images.length > 0 && post._platform !== 'weibo') {
-            hostedImageUrls = await uploadAllImagesToSupabase(post.note_id, post._scraperImagesDir)
+            const { urls, errors: imgErrors } = await uploadAllImagesToSupabase(post.note_id, post._scraperImagesDir)
+            hostedImageUrls = urls
+            postErrors.push(...imgErrors)
           }
-          record = buildSupabaseRecord(post, filterResult, translation, hostedImageUrls, null)
+          record = buildSupabaseRecord(post, filterResult, translation, hostedImageUrls, null, postErrors)
         }
 
         results.accepted.push({
