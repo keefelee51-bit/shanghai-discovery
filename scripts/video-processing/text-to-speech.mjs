@@ -68,6 +68,7 @@ export async function generateAllSegments(segments, outputDir, voiceId = 'Rachel
   // ── STEP 2: Initialize ElevenLabs client ──────────────────────────────────
   const client = new ElevenLabsClient({
     apiKey: process.env.ELEVENLABS_API_KEY,
+    baseUrl: 'https://api.us.elevenlabs.io', // avoids Free Tier "detected_unusual_activity" block
   });
 
   // ── STEP 3: Generate audio for each segment ───────────────────────────────
