@@ -511,16 +511,6 @@ async function main() {
           continue
         }
 
-        // Pre-filter: Weibo posts must have ≥10 comments to be worth processing
-        if (post._platform === 'weibo') {
-          const commentCount = parseInt(post.comment_count) || 0
-          if (commentCount < 10) {
-            console.log(`  ✗ Rejected: Weibo post has only ${commentCount} comments (minimum 10)\n`)
-            results.rejected.push({ note_id: post.note_id, title: post.title, reason: `Low engagement: ${commentCount} comments`, relevant: false, score: 0, category: 'none' })
-            continue
-          }
-        }
-
         // Step 1: Filter
         console.log(`  → Filtering...`)
         const filterResult = await filterPost(post)

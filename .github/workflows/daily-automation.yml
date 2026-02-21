@@ -28,6 +28,67 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ══════════════════════════════════════════════════════════════
+      # PHASE 0 — Validate all API credentials before doing any work
+      # Fails fast (< 30s) if any key is missing or invalid,
+      # before wasting time on scraping or heavy installs.
+      # ══════════════════════════════════════════════════════════════
+
+      - name: Validate API credentials
+        env:
+          VITE_ANTHROPIC_API_KEY: ${{ secrets.VITE_ANTHROPIC_API_KEY }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        run: |
+          FAILED=0
+
+          # Anthropic
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $VITE_ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}')
+          if [ "$STATUS" = "200" ]; then echo "✓ Anthropic API key valid"
+          else echo "✗ Anthropic API key invalid (HTTP $STATUS)"; FAILED=1; fi
+
+          # Supabase
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$VITE_SUPABASE_URL/rest/v1/Post?limit=1" \
+            -H "apikey: $VITE_SUPABASE_ANON_KEY")
+          if [ "$STATUS" = "200" ]; then echo "✓ Supabase credentials valid"
+          else echo "✗ Supabase credentials invalid (HTTP $STATUS)"; FAILED=1; fi
+
+          # OpenAI (used for Whisper transcription)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://api.openai.com/v1/models \
+            -H "Authorization: Bearer $OPENAI_API_KEY")
+          if [ "$STATUS" = "200" ]; then echo "✓ OpenAI API key valid"
+          else echo "✗ OpenAI API key invalid (HTTP $STATUS)"; FAILED=1; fi
+
+          # ElevenLabs
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://api.us.elevenlabs.io/v1/user \
+            -H "xi-api-key: $ELEVENLABS_API_KEY")
+          if [ "$STATUS" = "200" ]; then echo "✓ ElevenLabs API key valid"
+          else echo "✗ ElevenLabs API key invalid (HTTP $STATUS) — video dubbing will be skipped"; fi
+
+          # Google Vision
+          if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
+            echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
+            TYPE=$(python3 -c "import json,sys; d=json.load(open('google-vision-key.json')); print(d.get('type','missing'))" 2>/dev/null)
+            if [ "$TYPE" = "service_account" ]; then echo "✓ Google Vision credentials valid"
+            else echo "✗ Google Vision credentials invalid (type=$TYPE) — image translation will be skipped"; fi
+          else
+            echo "✗ GOOGLE_CREDENTIALS_JSON not set — image translation will be skipped"
+            echo "{}" > google-vision-key.json
+          fi
+
+          if [ "$FAILED" = "1" ]; then
+            echo ""
+            echo "Critical credentials missing — fix secrets and re-run."
+            exit 1
+          fi
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -126,18 +187,6 @@ jobs:
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install demucs
 
-      - name: Setup Google Vision credentials
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        run: |
-          if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
-            echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
-            echo "Google Vision credentials written"
-          else
-            echo "GOOGLE_CREDENTIALS_JSON not set — image text translation skipped"
-            echo "{}" > google-vision-key.json
-          fi
-
       # ══════════════════════════════════════════════════════════════
       # PHASE 4 — Process and upload
       # ══════════════════════════════════════════════════════════════
@@ -156,8 +205,8 @@ jobs:
           WEIBO_FILE="${{ steps.verify-weibo.outputs.weibo_file }}"
 
           if [ -n "$WEIBO_FILE" ]; then
-            echo "Processing XHS + Weibo posts (limits: 15 XHS, 5 Weibo)..."
-            node scripts/process-xhs-posts.mjs "$XHS_FILE" "./scraper/$WEIBO_FILE" --limits 15,5
+            echo "Processing XHS + Weibo posts (limits: 15 XHS, 10 Weibo)..."
+            node scripts/process-xhs-posts.mjs "$XHS_FILE" "./scraper/$WEIBO_FILE" --limits 15,10
           else
             echo "Processing XHS-only posts (limit: 15)..."
             node scripts/process-xhs-posts.mjs "$XHS_FILE" --limit 15
