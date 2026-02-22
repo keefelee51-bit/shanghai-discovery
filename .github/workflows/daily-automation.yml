@@ -75,7 +75,7 @@ jobs:
           # Google Vision
           if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
             echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
-            TYPE=$(python3 -c "import json,sys; d=json.load(open('google-vision-key.json')); print(d.get('type','missing'))" 2>/dev/null)
+            TYPE=$(python3 -c "import json,sys; d=json.load(open('google-vision-key.json')); print(d.get('type','missing'))" 2>/dev/null || echo "parse_error")
             if [ "$TYPE" = "service_account" ]; then echo "✓ Google Vision credentials valid"
             else echo "✗ Google Vision credentials invalid (type=$TYPE) — image translation will be skipped"; fi
           else
