@@ -72,9 +72,9 @@ jobs:
           if [ "$STATUS" = "200" ]; then echo "✓ ElevenLabs API key valid"
           else echo "✗ ElevenLabs API key invalid (HTTP $STATUS) — video dubbing will be skipped"; fi
 
-          # Google Vision
+          # Google Vision — write to absolute path so Node.js resolves it correctly
           if [ -n "$GOOGLE_CREDENTIALS_JSON" ]; then
-            echo "$GOOGLE_CREDENTIALS_JSON" > google-vision-key.json
+            echo "$GOOGLE_CREDENTIALS_JSON" > "$GITHUB_WORKSPACE/google-vision-key.json"
             if echo "$GOOGLE_CREDENTIALS_JSON" | grep -q '"type".*"service_account"'; then
               echo "✓ Google Vision credentials valid"
             else
@@ -82,7 +82,7 @@ jobs:
             fi
           else
             echo "✗ GOOGLE_CREDENTIALS_JSON not set — image translation will be skipped"
-            echo "{}" > google-vision-key.json
+            echo "{}" > "$GITHUB_WORKSPACE/google-vision-key.json"
           fi
 
           if [ "$FAILED" = "1" ]; then
@@ -202,7 +202,7 @@ jobs:
           QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
-          GOOGLE_APPLICATION_CREDENTIALS: ./google-vision-key.json
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ github.workspace }}/google-vision-key.json
         run: |
           XHS_FILE="./scraper/${{ steps.verify.outputs.scraped_file }}"
           WEIBO_FILE="${{ steps.verify-weibo.outputs.weibo_file }}"
