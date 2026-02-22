@@ -7,18 +7,13 @@ on:
 
 jobs:
   scrape-and-process:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     defaults:
       run:
         shell: bash
 
     steps:
-      # Windows self-hosted runner: add Git Bash to PATH so all bash steps work
-      - name: Add Git Bash to PATH
-        shell: cmd
-        run: echo C:\Program Files\Git\bin>> %GITHUB_PATH%
-
       # ══════════════════════════════════════════════════════════════
       # PHASE 1 — Minimum setup needed to run the scraper
       # Goal: get to scraping as fast as possible so a bad cookie
